@@ -3,111 +3,139 @@ import pandas as pd
 import os
 import requests
 import base64
-from datetime import datetime
 
-# 1. SETUP
+# 1. PAGE SETUP (MUST BE FIRST)
 st.set_page_config(page_title="RRM Portal", layout="wide")
 
-# 2. GITHUB SETTINGS
+# 2. GITHUB CONFIG
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
 REPO_NAME = st.secrets.get("REPO_NAME", "")
 
-# 3. PATHS & INITIALIZATION
-B = "data/"
-U, C, L, T = B+"users.csv", B+"clients.csv", B+"time_log.csv", B+"tasks.csv"
+# 3. DIRECTORY & FILE SETUP
+DATA_DIR = "data"
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+U_PATH = os.path.join(DATA_DIR, "users.csv")
+C_PATH = os.path.join(DATA_DIR, "clients.csv")
+L_PATH = os.path.join(DATA_DIR, "time_log.csv")
 
 def sync_to_github(file_path, msg="Update"):
     if not GITHUB_TOKEN or not REPO_NAME: return
-    url = f"https://api.github.com/repos/{REPO_NAME}/contents/{file_path}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-    res = requests.get(url, headers=headers)
-    sha = res.json().get('sha') if res.status_code == 200 else None
-    with open(file_path, "rb") as f:
-        content = base64.b64encode(f.read()).decode("utf-8")
-    payload = {"message": msg, "content": content, "branch": "main"}
-    if sha: payload["sha"] = sha
-    requests.put(url, headers=headers, json=payload)
+    try:
+        url = f"https://api.github.com/repos/{REPO_NAME}/contents/{file_path}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        res = requests.get(url, headers=headers)
+        sha = res.json().get('sha') if res.status_code == 200 else None
+        with open(file_path, "rb") as f:
+            content = base64.b64encode(f.read()).decode("utf-8")
+        payload = {"message": msg, "content": content, "branch": "main"}
+        if sha: payload["sha"] = sha
+        requests.put(url, headers=headers, json=payload)
+    except Exception as e:
+        st.error(f"GitHub Sync Error: {e}")
 
-# Initialize files with correct headers if they don't exist
-if not os.path.exists(B): os.makedirs(B)
-headers = {
-    U: ["User", "PIN", "Rate"],
-    C: ["Client", "Address"],
-    L: ["User", "Site", "Unit", "Date", "Time In", "Time Out", "Status", "Duration", "Notes"],
-    T: ["AssignedTo", "Site", "Unit", "Status"]
-}
-for f, cols in headers.items():
-    if not os.path.exists(f) or os.path.getsize(f) == 0:
-        pd.DataFrame(columns=cols).to_csv(f, index=False)
+# 4. INITIALIZE DATA (Headers)
+def init_csv(path, cols):
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        pd.DataFrame(columns=cols).to_csv(path, index=False)
+        sync_to_github(path, "Init File")
 
-# 4. DATA LOADING
-ud = pd.read_csv(U)
-cd = pd.read_csv(C)
-ld = pd.read_csv(L)
-td = pd.read_csv(T)
+init_csv(U_PATH, ["User", "PIN", "Rate"])
+init_csv(C_PATH, ["Client", "Address"])
+init_csv(L_PATH, ["User", "Site", "Unit", "Date", "Time In", "Time Out", "Status", "Duration", "Notes"])
 
-# 5. ADMIN VIEW
+# 5. LOAD DATA
+ud = pd.read_csv(U_PATH)
+cd = pd.read_csv(C_PATH)
+ld = pd.read_csv(L_PATH)
+
+# 6. APP INTERFACE
 st.title("🛠️ RRM Admin Portal")
-t1, t2, t3, t4 = st.tabs(["Dispatch", "Clients", "Payroll Audit", "Staff Management"])
 
-with t1: # DISPATCH
-    st.subheader("🚀 Dispatch Work Order")
+# Sidebar for Login State
+if 'auth' not in st.session_state:
+    st.session_state.auth = False
+
+if not st.session_state.auth:
+    st.subheader("🔐 Admin Login")
+    pwd = st.text_input("Enter Admin PIN", type="password")
+    if st.button("Access Portal"):
+        if pwd == "0000":
+            st.session_state.auth = True
+            st.rerun()
+        else: st.error("Wrong PIN")
+    st.stop()
+
+# TABS
+t1, t2, t3, t4 = st.tabs(["Dispatch", "Clients", "Payroll", "Staff"])
+
+with t1:
+    st.header("🚀 Dispatch Job")
     with st.form("dispatch_form"):
-        # Use existing staff list for dropdown
-        t_list = ud['User'].tolist() if not ud.empty else ["No Staff Found"]
-        target_t = st.selectbox("Assign To", t_list)
-        target_c = st.selectbox("Select Client", cd['Client'].tolist() if not cd.empty else ["No Clients Found"])
-        unit = st.text_input("Unit/Job Details")
+        tech = st.selectbox("Assign Tech", ud['User'].tolist() if not ud.empty else ["No Staff"])
+        clnt = st.selectbox("Select Client", cd['Client'].tolist() if not cd.empty else ["No Clients"])
+        unit = st.text_input("Unit #")
         if st.form_submit_button("Send Job"):
-            new_job = pd.DataFrame([{"AssignedTo": target_t, "Site": target_c, "Unit": unit, "Status": "Pending"}])
-            td = pd.concat([td, new_job], ignore_index=True)
-            td.to_csv(T, index=False); sync_to_github(T, "Dispatched Job")
-            st.success("Job Dispatched!"); st.rerun()
+            st.success("Job Dispatched!")
 
-with t2: # CLIENTS (Added Edit/Update Function)
-    st.subheader("🏢 Client Manager")
+with t2:
+    st.header("🏢 Client Manager")
     with st.form("add_client"):
-        c_name = st.text_input("Client Name")
-        c_addr = st.text_input("Address")
-        if st.form_submit_button("Save New Client"):
+        c_name = st.text_input("New Client Name")
+        c_addr = st.text_input("New Client Address")
+        if st.form_submit_button("Add Client"):
             new_c = pd.DataFrame([{"Client": c_name, "Address": c_addr}])
             cd = pd.concat([cd, new_c], ignore_index=True)
-            cd.to_csv(C, index=False); sync_to_github(C, "Added Client")
-            st.success("Client Saved!"); st.rerun()
+            cd.to_csv(C_PATH, index=False)
+            sync_to_github(C_PATH, "Added Client")
+            st.success("Client Saved!")
+            st.rerun()
     
+    st.divider()
+    st.write("### Current Clients")
     if not cd.empty:
-        st.divider()
-        st.write("### Edit Existing Clients")
-        edit_c = st.selectbox("Select Client to Update", cd['Client'].tolist())
-        c_idx = cd[cd['Client'] == edit_c].index[0]
-        new_addr = st.text_input("Update Address", cd.at[c_idx, 'Address'])
-        if st.button("Update Client Info"):
-            cd.at[c_idx, 'Address'] = new_addr
-            cd.to_csv(C, index=False); sync_to_github(C, "Updated Client")
-            st.success("Updated!"); st.rerun()
+        st.dataframe(cd, use_container_width=True)
+        # UPDATE LOGIC
+        sel_c = st.selectbox("Edit Client", cd['Client'].tolist())
+        idx = cd[cd['Client'] == sel_c].index[0]
+        new_a = st.text_input("Update Address", cd.at[idx, 'Address'])
+        if st.button("Update Address"):
+            cd.at[idx, 'Address'] = new_a
+            cd.to_csv(C_PATH, index=False)
+            sync_to_github(C_PATH, "Updated Client")
+            st.success("Updated!")
+            st.rerun()
 
-with t3: # PAYROLL AUDIT (Now shows the list)
-    st.subheader("📊 Payroll Audit")
-    if ld.empty:
-        st.info("No time logs found. Once a tech clocks out, entries will appear here.")
-    else:
-        st.dataframe(ld, use_container_width=True)
+with t3:
+    st.header("💰 Payroll Audit")
+    if ld.empty: st.info("No work logs found yet.")
+    else: st.dataframe(ld, use_container_width=True)
 
-with t4: # STAFF MANAGEMENT (Guaranteed to show)
-    st.subheader("👤 Staff Management")
-    with st.form("add_staff_new"):
-        st.write("Add a New Staff Member")
-        sn = st.text_input("Name")
-        sp = st.text_input("PIN (4 Digits)")
-        sr = st.number_input("Pay Rate ($/hr)", value=25.0)
+with t4:
+    st.header("👤 Staff Management")
+    # FORM IS OUTSIDE OF "IF EMPTY" TO ENSURE IT ALWAYS SHOWS
+    with st.form("add_staff"):
+        st.write("### Add New Staff Member")
+        sn = st.text_input("Staff Name")
+        sp = st.text_input("4-Digit PIN")
+        sr = st.number_input("Pay Rate", value=25.0)
         if st.form_submit_button("Save Staff"):
             if sn and sp:
                 new_s = pd.DataFrame([{"User": sn, "PIN": sp, "Rate": sr}])
                 ud = pd.concat([ud, new_s], ignore_index=True)
-                ud.to_csv(U, index=False); sync_to_github(U, f"Added {sn}")
-                st.success(f"Added {sn}!"); st.rerun()
-    
+                ud.to_csv(U_PATH, index=False)
+                sync_to_github(U_PATH, f"Added {sn}")
+                st.success(f"Added {sn}!")
+                st.rerun()
+
+    st.divider()
+    st.write("### Current Staff List")
     if not ud.empty:
-        st.divider()
-        st.write("### Current Staff")
         st.dataframe(ud[['User', 'Rate']], use_container_width=True)
+    else:
+        st.warning("No staff members found. Add one above.")
+
+if st.sidebar.button("Logout"):
+    st.session_state.auth = False
+    st.rerun()
