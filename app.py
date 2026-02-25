@@ -51,7 +51,8 @@ def load_data():
     l = pd.read_csv(PATHS["l"]) if os.path.exists(PATHS["l"]) else pd.DataFrame(columns=["User", "Client", "In", "Out", "Date", "Notes", "Duration"])
     t = pd.read_csv(PATHS["t"], dtype={'Unit': str}) if os.path.exists(PATHS["t"]) else pd.DataFrame(columns=["Tech", "Client", "Unit", "Status"])
     ph = pd.read_csv(PATHS["p"]) if os.path.exists(PATHS["p"]) else pd.DataFrame(columns=["Date", "User", "Client", "Unit", "Type", "PhotoData"])
-    if not l.empty: l['Date'] = pd.to_datetime(l['Date']).dt.date
+    if not l.empty: 
+        l['Date'] = pd.to_datetime(l['Date']).dt.date
     return u, c, l, t, ph
 
 ud, cd, ld, td, pd_photos = load_data()
@@ -93,6 +94,7 @@ if view == "Admin":
             if st.form_submit_button("Assign"):
                 td = pd.concat([td, pd.DataFrame([{"Tech":t,"Client":cl,"Unit":u,"Status":"Pending"}])])
                 td.to_csv(PATHS["t"], index=False); sync(PATHS["t"], "push"); st.rerun()
+        st.write("### Current Pending Tasks")
         st.write(td[td['Status']=="Pending"])
 
     with t2:
@@ -102,7 +104,6 @@ if view == "Admin":
             st.write("### Staff Member")
             s_action = st.radio("Staff Action", ["Add", "Edit/Delete"], horizontal=True, key="s_act")
             target = st.selectbox("Select Staff", ud['User'].tolist(), key="s_target") if s_action == "Edit/Delete" else ""
-            
             with st.form("staff_form"):
                 n = st.text_input("Name", value=target if target else "")
                 p = st.text_input("PIN", value=str(ud[ud['User']==target]['PIN'].iloc[0]) if target else "")
@@ -111,15 +112,10 @@ if view == "Admin":
                     if s_action == "Edit/Delete": ud = ud[ud['User'] != target]
                     ud = pd.concat([ud, pd.DataFrame([{"User":n,"PIN":p.zfill(4),"Rate":r}])])
                     ud.to_csv(PATHS["u"], index=False); sync(PATHS["u"], "push"); st.rerun()
-            if s_action == "Edit/Delete" and target:
-                if st.button("🗑️ Permanently Delete Staff", type="secondary"):
-                    ud = ud[ud['User']!=target]; ud.to_csv(PATHS["u"], index=False); sync(PATHS["u"], "push"); st.rerun()
-
         with c2:
             st.write("### Client Location")
             c_action = st.radio("Client Action", ["Add", "Edit/Delete"], horizontal=True, key="c_act")
             target_c = st.selectbox("Select Client", cd['Client'].tolist(), key="c_target") if c_action == "Edit/Delete" else ""
-            
             with st.form("client_form"):
                 cn = st.text_input("Client Name", value=target_c if target_c else "")
                 ca = st.text_input("Address", value=cd[cd['Client']==target_c]['Address'].iloc[0] if target_c else "")
@@ -127,16 +123,12 @@ if view == "Admin":
                     if c_action == "Edit/Delete": cd = cd[cd['Client'] != target_c]
                     cd = pd.concat([cd, pd.DataFrame([{"Client":cn,"Address":ca}])])
                     cd.to_csv(PATHS["c"], index=False); sync(PATHS["c"], "push"); st.rerun()
-            if c_action == "Edit/Delete" and target_c:
-                if st.button("🗑️ Permanently Delete Client", type="secondary"):
-                    cd = cd[cd['Client']!=target_c]; cd.to_csv(PATHS["c"], index=False); sync(PATHS["c"], "push"); st.rerun()
 
     with t3:
         st.subheader("Work History")
         dr = st.date_input("Range", [get_mst().date()-timedelta(7), get_mst().date()])
         f_tech = st.multiselect("Filter Tech", ud['User'].unique(), default=ud['User'].unique())
         f_s = st.radio("Status", ["All", "Complete", "Paused"], horizontal=True)
-        
         mask = (ld['Date'] >= dr[0]) & (ld['Date'] <= dr[1]) if len(dr)==2 else True
         f_ld = ld[mask & ld['User'].isin(f_tech)].sort_values("Date", ascending=False)
         if f_s != "All": f_ld = f_ld[f_ld['Notes'].str.contains(f"\[{f_s.upper()}\]", na=False)]
@@ -145,9 +137,7 @@ if view == "Admin":
             try: h, m, s = map(int, td_str.split(':')); return h + m/60 + s/3600
             except: return 0
         st.metric("Total Hours", f"{f_ld['Duration'].apply(to_hours).sum():.2f} hrs")
-        
         st.dataframe(f_ld.style.applymap(lambda x: 'background-color: #d4edda' if '[COMPLETE]' in str(x) else ('background-color: #fff3cd' if '[PAUSED]' in str(x) else ''), subset=['Notes']), use_container_width=True)
-        
         st.divider()
         if not f_ld.empty:
             sel_row = st.selectbox("View Details/Photos", f_ld.index, format_func=lambda x: f"{f_ld.loc[x, 'Date']} - {f_ld.loc[x, 'Client']}")
@@ -157,24 +147,49 @@ if view == "Admin":
             cols = st.columns(len(ph) if len(ph) > 0 else 1)
             for i, (_, p) in enumerate(ph.iterrows()): cols[i].image(base64.b64decode(p['PhotoData']), caption=p['Type'])
 
-# 7. FIELD PORTAL
+# 7. FIELD PORTAL (Restored Manual Logic)
 else:
     if 'job' not in st.session_state:
-        st.subheader("Assignments")
+        st.subheader("Your Assignments")
         for i, r in td[(td['Tech']==st.session_state.user)&(td['Status']=="Pending")].iterrows():
             if st.button(f"In: {r['Client']} (Unit {r['Unit']})"):
-                st.session_state.job = {"c": r['Client'], "u": r['Unit']}; st.session_state.start = get_mst(); st.rerun()
+                st.session_state.job = {"c": r['Client'], "u": r['Unit'], "mode": "Dispatch"}; st.session_state.start = get_mst(); st.rerun()
+        
+        st.divider()
+        st.subheader("Manual / Emergency Entry")
+        is_new = st.checkbox("New Client?")
+        m_c = st.text_input("New Client Name") if is_new else st.selectbox("Existing Client", ["--"] + cd['Client'].tolist())
+        m_u = st.text_input("Unit #")
+        if st.button("Manual Clock-In"):
+            if m_c and m_c != "--":
+                st.session_state.job = {"c": m_c, "u": m_u, "mode": "Manual"}; st.session_state.start = get_mst(); st.rerun()
     else:
-        st.warning(f"Working: {st.session_state.job['c']}")
-        notes = st.text_area("Notes")
-        c1, c2 = st.columns(2)
-        if c1.button("⌛ PAUSE"):
-            dur = str(get_mst()-st.session_state.start).split(".")[0]
-            new = pd.DataFrame([{"User":st.session_state.user,"Client":st.session_state.job['c'],"In":st.session_state.start.strftime('%H:%M'),"Out":get_mst().strftime('%H:%M'),"Date":get_mst().date(),"Notes":f"[PAUSED] {notes}","Duration":dur}])
-            pd.concat([ld, new]).to_csv(PATHS["l"], index=False); sync(PATHS["l"], "push"); del st.session_state.job; st.rerun()
-        if c2.button("🏁 FINALIZE", type="primary"):
-            dur = str(get_mst()-st.session_state.start).split(".")[0]
-            new = pd.DataFrame([{"User":st.session_state.user,"Client":st.session_state.job['c'],"In":st.session_state.start.strftime('%H:%M'),"Out":get_mst().strftime('%H:%M'),"Date":get_mst().date(),"Notes":f"[COMPLETE] {notes}","Duration":dur}])
-            pd.concat([ld, new]).to_csv(PATHS["l"], index=False); sync(PATHS["l"], "push")
-            td.loc[(td['Tech']==st.session_state.user)&(td['Client']==st.session_state.job['c']), 'Status'] = 'Done'
-            td.to_csv(PATHS["t"], index=False); sync(PATHS["t"], "push"); del st.session_state.job; st.rerun()
+        st.warning(f"Working: {st.session_state.job['c']} (Unit: {st.session_state.job['u']})")
+        if 'before' not in st.session_state:
+            up = st.file_uploader("Before Photo")
+            if st.button("Proceed"):
+                if up:
+                    img = Image.open(up); img.thumbnail((800,800)); buf = io.BytesIO(); img.save(buf, format="JPEG"); enc = base64.b64encode(buf.getvalue()).decode()
+                    pd.concat([pd_photos, pd.DataFrame([{"Date":get_mst().date(),"User":st.session_state.user,"Client":st.session_state.job['c'],"Unit":st.session_state.job['u'],"Type":"Before","PhotoData":enc}])]).to_csv(PATHS["p"], index=False); sync(PATHS["p"], "push")
+                st.session_state.before = True; st.rerun()
+        else:
+            notes = st.text_area("Notes")
+            up2 = st.file_uploader("After Photo")
+            c1, c2 = st.columns(2)
+            if c1.button("⌛ PAUSE"):
+                dur = str(get_mst()-st.session_state.start).split(".")[0]
+                new = pd.DataFrame([{"User":st.session_state.user,"Client":st.session_state.job['c'],"In":st.session_state.start.strftime('%H:%M'),"Out":get_mst().strftime('%H:%M'),"Date":get_mst().date(),"Notes":f"[PAUSED] {notes}","Duration":dur}])
+                pd.concat([ld, new]).to_csv(PATHS["l"], index=False); sync(PATHS["l"], "push")
+                if st.session_state.job["mode"] == "Manual":
+                    pd.concat([td, pd.DataFrame([{"Tech":st.session_state.user,"Client":st.session_state.job['c'],"Unit":st.session_state.job['u'],"Status":"Pending"}])]).to_csv(PATHS["t"], index=False); sync(PATHS["t"], "push")
+                del st.session_state.job; del st.session_state.before; st.rerun()
+            if c2.button("🏁 FINALIZE", type="primary"):
+                if up2:
+                    img = Image.open(up2); img.thumbnail((800,800)); buf = io.BytesIO(); img.save(buf, format="JPEG"); enc = base64.b64encode(buf.getvalue()).decode()
+                    pd.concat([pd_photos, pd.DataFrame([{"Date":get_mst().date(),"User":st.session_state.user,"Client":st.session_state.job['c'],"Unit":st.session_state.job['u'],"Type":"After","PhotoData":enc}])]).to_csv(PATHS["p"], index=False); sync(PATHS["p"], "push")
+                dur = str(get_mst()-st.session_state.start).split(".")[0]
+                new = pd.DataFrame([{"User":st.session_state.user,"Client":st.session_state.job['c'],"In":st.session_state.start.strftime('%H:%M'),"Out":get_mst().strftime('%H:%M'),"Date":get_mst().date(),"Notes":f"[COMPLETE] {notes}","Duration":dur}])
+                pd.concat([ld, new]).to_csv(PATHS["l"], index=False); sync(PATHS["l"], "push")
+                td.loc[(td['Tech']==st.session_state.user)&(td['Client']==st.session_state.job['c']), 'Status'] = 'Done'
+                td.to_csv(PATHS["t"], index=False); sync(PATHS["t"], "push")
+                del st.session_state.job; del st.session_state.before; st.rerun()
