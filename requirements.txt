@@ -1,6 +1,3 @@
-streamlit
 pandas
+requests
 Pillow
-streamlit-drawable-canvas
-streamlit-autorefresh
-streamlit-cookies-manager
