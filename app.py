@@ -86,7 +86,7 @@ if not st.session_state.auth:
                 st.error("Invalid Admin PIN")
     else:
         if ud.empty: 
-            st.warning("No staff found. Admin must log in and add staff first.")
+            st.warning("No staff found. Admin must log in.")
             st.stop()
         t_name = st.selectbox("Select Your Name", ud['User'].tolist())
         t_pin_input = st.text_input("Enter Your PIN", type="password")
@@ -128,25 +128,19 @@ if view == "Admin Dashboard":
     with tabs[1]:
         st.subheader("Add New Staff")
         with st.form("staff_form"):
-            sn = st.text_input("Name")
-            sp = st.text_input("PIN (e.g. 0123)")
-            sr = st.number_input("Hourly Rate", value=25.0)
+            sn, sp, sr = st.text_input("Name"), st.text_input("PIN"), st.number_input("Rate", 25.0)
             if st.form_submit_button("Save Staff"):
-                formatted_pin = str(sp).zfill(4)
-                new_u = pd.DataFrame([{"User":sn,"PIN":formatted_pin,"Rate":sr}])
-                ud = pd.concat([ud, new_u], ignore_index=True)
-                ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.success("Staff Saved!"); st.rerun()
+                ud = pd.concat([ud, pd.DataFrame([{"User":sn,"PIN":str(sp).zfill(4),"Rate":sr}])], ignore_index=True)
+                ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.success("Saved!"); st.rerun()
         st.dataframe(ud, use_container_width=True)
 
     with tabs[2]:
         st.subheader("Add New Client")
         with st.form("client_form"):
-            cn = st.text_input("Company Name")
-            ca = st.text_input("Address")
+            cn, ca = st.text_input("Company Name"), st.text_input("Address")
             if st.form_submit_button("Save Client"):
-                new_c = pd.DataFrame([{"Client":cn,"Address":ca}])
-                cd = pd.concat([cd, new_c], ignore_index=True)
-                cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.success("Client Saved!"); st.rerun()
+                cd = pd.concat([cd, pd.DataFrame([{"Client":cn,"Address":ca}])], ignore_index=True)
+                cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.rerun()
         st.dataframe(cd, use_container_width=True)
 
     with tabs[3]:
@@ -158,8 +152,7 @@ else:
     st.title("📱 Technician Field Portal")
     
     if 'job' not in st.session_state:
-        # Section A: Dispatched Jobs
-        st.subheader("📌 Your Assigned Tasks")
+        st.subheader("📌 Your Active/Assigned Tasks")
         tasks = td[(td['Tech'] == st.session_state.user) & (td['Status'] == 'Pending')]
         if not tasks.empty:
             for i, r in tasks.iterrows():
@@ -167,60 +160,56 @@ else:
                     st.write(f"**{r['Client']}** - Unit: {r['Unit']}")
                     if st.button(f"Clock In: {r['Client']}", key=f"d_btn_{i}"):
                         st.session_state.job = {"c": r['Client'], "u": str(r['Unit']), "type": "D"}
-                        st.session_state.start = datetime.now()
-                        st.rerun()
+                        st.session_state.start = datetime.now(); st.rerun()
         else:
             st.info("No assigned jobs currently.")
         
         st.divider()
-        
-        # Section B: Manual Clock In (Modified for Flexibile Client Input)
         st.subheader("⚡ Start New (Unassigned) Job")
-        
-        # Client Input Logic
-        client_list = cd['Client'].tolist() if not cd.empty else []
         is_new_client = st.checkbox("➕ Add New/Unlisted Client")
-        
         if is_new_client:
             m_client = st.text_input("Type Client Name")
         else:
-            m_client = st.selectbox("Select Existing Client", ["-- Select --"] + client_list)
-        
+            m_client = st.selectbox("Select Client", ["-- Select --"] + cd['Client'].tolist())
         m_unit = st.text_input("Unit # (Optional)")
         
         if st.button("Start Work Now"):
             if m_client == "-- Select --" or m_client == "":
-                st.error("Please select or type a client name.")
+                st.error("Select/type a client.")
             else:
                 st.session_state.job = {"c": m_client, "u": str(m_unit), "type": "M"}
-                st.session_state.start = datetime.now()
-                st.rerun()
+                st.session_state.start = datetime.now(); st.rerun()
 
     else:
-        # Section C: Active Clock-In
         st.success(f"ACTIVE JOB: {st.session_state.job['c']}")
         st.write(f"Started at: {st.session_state.start.strftime('%I:%M %p')}")
         notes = st.text_area("Work Notes")
         
-        if st.button("🚩 FINALIZE & CLOCK OUT", type="primary"):
-            end_time = datetime.now()
-            new_log = pd.DataFrame([{
-                "User": st.session_state.user, 
-                "Client": st.session_state.job['c'], 
-                "In": st.session_state.start.strftime('%H:%M'), 
-                "Out": end_time.strftime('%H:%M'), 
-                "Date": end_time.strftime('%Y-%m-%d'), 
-                "Notes": notes
-            }])
-            ld = pd.concat([ld, new_log], ignore_index=True)
-            ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
-            
-            if st.session_state.job['type'] == "D":
-                td.loc[(td['Tech'] == st.session_state.user) & 
-                       (td['Client'] == st.session_state.job['c']) & 
-                       (td['Unit'] == st.session_state.job['u']), 'Status'] = 'Done'
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("⌛ PAUSE (CLOCK OUT ONLY)", use_container_width=True):
+                end_t = datetime.now()
+                # Log the time but DON'T change task status
+                new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": f"[PARTIAL] {notes}"}])
+                ld = pd.concat([ld, new_log], ignore_index=True); ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
+                
+                # If it was a manual job, we must add it to the pending list so they can return to it
+                if st.session_state.job['type'] == "M":
+                    new_task = pd.DataFrame([{"Tech": st.session_state.user, "Client": st.session_state.job['c'], "Unit": st.session_state.job['u'], "Status": "Pending"}])
+                    td = pd.concat([td, new_task], ignore_index=True); td.to_csv(T_PATH, index=False); push_to_github(T_PATH)
+                
+                del st.session_state.job; st.success("Progress Saved"); st.rerun()
+
+        with col2:
+            if st.button("🏁 FINALIZE & CLOSE JOB", type="primary", use_container_width=True):
+                end_t = datetime.now()
+                # Log the time
+                new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": notes}])
+                ld = pd.concat([ld, new_log], ignore_index=True); ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
+                
+                # Mark as Done
+                td.loc[(td['Tech'] == st.session_state.user) & (td['Client'] == st.session_state.job['c']) & (td['Unit'] == st.session_state.job['u']), 'Status'] = 'Done'
                 td.to_csv(T_PATH, index=False); push_to_github(T_PATH)
-            
-            del st.session_state.job
-            st.success("Work logged successfully!")
-            st.rerun()
+                
+                del st.session_state.job; st.success("Job Completed"); st.rerun()
