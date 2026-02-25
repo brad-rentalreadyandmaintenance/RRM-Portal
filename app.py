@@ -99,34 +99,37 @@ if view == "Admin":
         st.subheader("Staff & Clients")
         c1, c2 = st.columns(2)
         with c1:
-            st.write("---")
-            with st.form("staff"):
-                s_action = st.radio("Staff Action", ["Add", "Edit/Delete"], horizontal=True)
-                target = st.selectbox("Select Staff", ud['User'].tolist()) if s_action == "Edit/Delete" else ""
+            st.write("### Staff Member")
+            s_action = st.radio("Staff Action", ["Add", "Edit/Delete"], horizontal=True, key="s_act")
+            target = st.selectbox("Select Staff", ud['User'].tolist(), key="s_target") if s_action == "Edit/Delete" else ""
+            
+            with st.form("staff_form"):
                 n = st.text_input("Name", value=target if target else "")
                 p = st.text_input("PIN", value=str(ud[ud['User']==target]['PIN'].iloc[0]) if target else "")
                 r = st.number_input("Rate", value=float(ud[ud['User']==target]['Rate'].iloc[0]) if target else 25.0)
-                sub = st.form_submit_button("Save Staff")
-                if sub:
+                if st.form_submit_button("Save Staff Changes"):
                     if s_action == "Edit/Delete": ud = ud[ud['User'] != target]
                     ud = pd.concat([ud, pd.DataFrame([{"User":n,"PIN":p.zfill(4),"Rate":r}])])
                     ud.to_csv(PATHS["u"], index=False); sync(PATHS["u"], "push"); st.rerun()
-            if target and st.button("🗑️ Delete Staff"):
-                ud = ud[ud['User']!=target]; ud.to_csv(PATHS["u"], index=False); sync(PATHS["u"], "push"); st.rerun()
+            if s_action == "Edit/Delete" and target:
+                if st.button("🗑️ Permanently Delete Staff", type="secondary"):
+                    ud = ud[ud['User']!=target]; ud.to_csv(PATHS["u"], index=False); sync(PATHS["u"], "push"); st.rerun()
+
         with c2:
-            st.write("---")
-            with st.form("client"):
-                c_action = st.radio("Client Action", ["Add", "Edit/Delete"], horizontal=True)
-                target_c = st.selectbox("Select Client", cd['Client'].tolist()) if c_action == "Edit/Delete" else ""
+            st.write("### Client Location")
+            c_action = st.radio("Client Action", ["Add", "Edit/Delete"], horizontal=True, key="c_act")
+            target_c = st.selectbox("Select Client", cd['Client'].tolist(), key="c_target") if c_action == "Edit/Delete" else ""
+            
+            with st.form("client_form"):
                 cn = st.text_input("Client Name", value=target_c if target_c else "")
                 ca = st.text_input("Address", value=cd[cd['Client']==target_c]['Address'].iloc[0] if target_c else "")
-                sub_c = st.form_submit_button("Save Client")
-                if sub_c:
+                if st.form_submit_button("Save Client Changes"):
                     if c_action == "Edit/Delete": cd = cd[cd['Client'] != target_c]
                     cd = pd.concat([cd, pd.DataFrame([{"Client":cn,"Address":ca}])])
                     cd.to_csv(PATHS["c"], index=False); sync(PATHS["c"], "push"); st.rerun()
-            if target_c and st.button("🗑️ Delete Client"):
-                cd = cd[cd['Client']!=target_c]; cd.to_csv(PATHS["c"], index=False); sync(PATHS["c"], "push"); st.rerun()
+            if c_action == "Edit/Delete" and target_c:
+                if st.button("🗑️ Permanently Delete Client", type="secondary"):
+                    cd = cd[cd['Client']!=target_c]; cd.to_csv(PATHS["c"], index=False); sync(PATHS["c"], "push"); st.rerun()
 
     with t3:
         st.subheader("Work History")
@@ -147,7 +150,7 @@ if view == "Admin":
         
         st.divider()
         if not f_ld.empty:
-            sel_row = st.selectbox("Select a row to view photos/details", f_ld.index, format_func=lambda x: f"{f_ld.loc[x, 'Date']} - {f_ld.loc[x, 'Client']}")
+            sel_row = st.selectbox("View Details/Photos", f_ld.index, format_func=lambda x: f"{f_ld.loc[x, 'Date']} - {f_ld.loc[x, 'Client']}")
             det = f_ld.loc[sel_row]
             st.info(f"**Notes:** {det['Notes']}")
             ph = pd_photos[(pd_photos['Client']==det['Client']) & (pd_photos['Date']==str(det['Date']))]
