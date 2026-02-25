@@ -4,11 +4,12 @@ import os
 import requests
 import base64
 from datetime import datetime, timedelta
+import time
 
 # 1. PAGE SETUP
 st.set_page_config(page_title="RRM Master Portal", layout="wide")
 
-# Makes buttons larger and easier to tap on mobile
+# Custom CSS for Mobile
 st.markdown("<style>button {height: 3em !important; font-size: 1.1rem !important;}</style>", unsafe_allow_html=True)
 
 # 2. CONFIG & GITHUB SETTINGS
@@ -20,12 +21,12 @@ if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 U_PATH, C_PATH, L_PATH, T_PATH = "data/users.csv", "data/clients.csv", "data/logs.csv", "data/tasks.csv"
 
 # --- TIMEZONE FIX ---
-# MST is UTC - 7 hours. Change the -7 to -6 if you move to MDT (Daylight Savings)
 def get_mst_time():
     return datetime.utcnow() - timedelta(hours=7)
 
 # 3. GITHUB SYNC FUNCTIONS
 def pull_from_github(path):
+    """Force download from GitHub to local disk."""
     try:
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
@@ -34,9 +35,13 @@ def pull_from_github(path):
             content = base64.b64decode(res.json()['content']).decode('utf-8')
             with open(path, "w") as f:
                 f.write(content)
-    except: pass
+            return True
+    except Exception as e:
+        st.error(f"Sync Error: {e}")
+    return False
 
 def push_to_github(path):
+    """Force upload from local disk to GitHub."""
     try:
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
@@ -49,10 +54,12 @@ def push_to_github(path):
         requests.put(url, headers=headers, json=payload)
     except: pass
 
-# 4. STARTUP BOOT
+# 4. BLOCKING STARTUP (Prevents data loss on refresh)
 if 'booted' not in st.session_state:
-    for p in [U_PATH, C_PATH, L_PATH, T_PATH]:
-        pull_from_github(p)
+    with st.spinner("🔄 Syncing with Cloud Database..."):
+        for p in [U_PATH, C_PATH, L_PATH, T_PATH]:
+            pull_from_github(p)
+        time.sleep(1) # Extra buffer to ensure file writing is finished
     st.session_state.booted = True
 
 # 5. DATA LOADING HELPERS
@@ -87,21 +94,23 @@ if not st.session_state.auth:
             if admin_pin == "0000":
                 st.session_state.update({"auth": True, "role": "Admin", "user": "Admin"})
                 st.rerun()
-            else:
-                st.error("Invalid Admin PIN")
+            else: st.error("Invalid PIN")
     else:
         if ud.empty: 
-            st.warning("No staff found. Admin must log in.")
+            st.warning("No staff found. Please wait 5 seconds and refresh. If still empty, Admin must add staff.")
+            if st.button("Retry Sync"):
+                st.session_state.clear()
+                st.rerun()
             st.stop()
         t_name = st.selectbox("Select Your Name", ud['User'].tolist())
         t_pin_input = st.text_input("Enter Your PIN", type="password")
         if st.button("Technician Login"):
-            actual_pin = str(ud[ud['User'] == t_name].iloc[0]['PIN']).zfill(4)
+            user_row = ud[ud['User'] == t_name]
+            actual_pin = str(user_row.iloc[0]['PIN']).zfill(4)
             if t_pin_input.strip().zfill(4) == actual_pin:
                 st.session_state.update({"auth": True, "role": "Tech", "user": t_name})
                 st.rerun()
-            else:
-                st.error("Incorrect PIN")
+            else: st.error("Incorrect PIN")
     st.stop()
 
 # 7. SIDEBAR NAVIGATION
@@ -109,7 +118,7 @@ st.sidebar.title(f"User: {st.session_state.user}")
 view = st.session_state.role if st.session_state.role == "Tech" else st.sidebar.radio("Navigation", ["Admin Dashboard", "Field Portal"])
 
 if st.sidebar.button("Log Out"):
-    st.session_state.auth = False
+    st.session_state.clear()
     st.rerun()
 
 # 8. ADMIN DASHBOARD
@@ -135,7 +144,8 @@ if view == "Admin Dashboard":
         with st.form("staff_form"):
             sn, sp, sr = st.text_input("Name"), st.text_input("PIN"), st.number_input("Rate", 25.0)
             if st.form_submit_button("Save Staff"):
-                ud = pd.concat([ud, pd.DataFrame([{"User":sn,"PIN":str(sp).zfill(4),"Rate":sr}])], ignore_index=True)
+                new_staff = pd.DataFrame([{"User":sn,"PIN":str(sp).zfill(4),"Rate":sr}])
+                ud = pd.concat([ud, new_staff], ignore_index=True)
                 ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.success("Saved!"); st.rerun()
         st.dataframe(ud, use_container_width=True)
 
@@ -144,12 +154,13 @@ if view == "Admin Dashboard":
         with st.form("client_form"):
             cn, ca = st.text_input("Company Name"), st.text_input("Address")
             if st.form_submit_button("Save Client"):
-                cd = pd.concat([cd, pd.DataFrame([{"Client":cn,"Address":ca}])], ignore_index=True)
-                cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.rerun()
+                new_client = pd.DataFrame([{"Client":cn,"Address":ca}])
+                cd = pd.concat([cd, new_client], ignore_index=True)
+                cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.success("Saved!"); st.rerun()
         st.dataframe(cd, use_container_width=True)
 
     with tabs[3]:
-        st.subheader("Master Logs (Times in MST)")
+        st.subheader("Master Logs (MST)")
         st.dataframe(ld, use_container_width=True)
 
 # 9. TECHNICIAN PORTAL
@@ -157,7 +168,7 @@ else:
     st.title("📱 Technician Field Portal")
     
     if 'job' not in st.session_state:
-        st.subheader("📌 Your Active/Assigned Tasks")
+        st.subheader("📌 Your Active Tasks")
         tasks = td[(td['Tech'] == st.session_state.user) & (td['Status'] == 'Pending')]
         if not tasks.empty:
             for i, r in tasks.iterrows():
@@ -166,34 +177,27 @@ else:
                     if st.button(f"Clock In: {r['Client']}", key=f"d_btn_{i}"):
                         st.session_state.job = {"c": r['Client'], "u": str(r['Unit']), "type": "D"}
                         st.session_state.start = get_mst_time(); st.rerun()
-        else:
-            st.info("No assigned jobs currently.")
+        else: st.info("No assigned jobs.")
         
         st.divider()
-        st.subheader("⚡ Start New (Unassigned) Job")
-        is_new_client = st.checkbox("➕ Add New/Unlisted Client")
-        if is_new_client:
-            m_client = st.text_input("Type Client Name")
-        else:
-            m_client = st.selectbox("Select Client", ["-- Select --"] + cd['Client'].tolist())
-        m_unit = st.text_input("Unit # (Optional)")
+        st.subheader("⚡ Start New Job")
+        is_new = st.checkbox("➕ Add New/Unlisted Client")
+        m_client = st.text_input("Type Client Name") if is_new else st.selectbox("Select Client", ["-- Select --"] + cd['Client'].tolist())
+        m_unit = st.text_input("Unit #")
         
         if st.button("Start Work Now"):
-            if m_client == "-- Select --" or m_client == "":
-                st.error("Select/type a client.")
+            if m_client in ["-- Select --", ""]: st.error("Select a client.")
             else:
                 st.session_state.job = {"c": m_client, "u": str(m_unit), "type": "M"}
                 st.session_state.start = get_mst_time(); st.rerun()
-
     else:
         st.success(f"ACTIVE JOB: {st.session_state.job['c']}")
         st.write(f"Started at: {st.session_state.start.strftime('%I:%M %p')}")
         notes = st.text_area("Work Notes")
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("⌛ PAUSE (CLOCK OUT ONLY)", use_container_width=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("⌛ PAUSE", use_container_width=True):
                 end_t = get_mst_time()
                 dur = str(end_t - st.session_state.start).split(".")[0]
                 new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": f"[PARTIAL] {notes}", "Duration": dur}])
@@ -201,14 +205,13 @@ else:
                 if st.session_state.job['type'] == "M":
                     new_task = pd.DataFrame([{"Tech": st.session_state.user, "Client": st.session_state.job['c'], "Unit": st.session_state.job['u'], "Status": "Pending"}])
                     td = pd.concat([td, new_task], ignore_index=True); td.to_csv(T_PATH, index=False); push_to_github(T_PATH)
-                del st.session_state.job; st.success("Progress Saved"); st.rerun()
-
-        with col2:
-            if st.button("🏁 FINALIZE & CLOSE JOB", type="primary", use_container_width=True):
+                del st.session_state.job; st.rerun()
+        with c2:
+            if st.button("🏁 FINALIZE", type="primary", use_container_width=True):
                 end_t = get_mst_time()
                 dur = str(end_t - st.session_state.start).split(".")[0]
                 new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": notes, "Duration": dur}])
                 ld = pd.concat([ld, new_log], ignore_index=True); ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
                 td.loc[(td['Tech'] == st.session_state.user) & (td['Client'] == st.session_state.job['c']) & (td['Unit'] == st.session_state.job['u']), 'Status'] = 'Done'
                 td.to_csv(T_PATH, index=False); push_to_github(T_PATH)
-                del st.session_state.job; st.success("Job Completed"); st.rerun()
+                del st.session_state.job; st.rerun()
