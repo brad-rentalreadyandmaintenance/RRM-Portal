@@ -5,11 +5,11 @@ import requests
 import base64
 from datetime import datetime, timedelta
 import time
+from PIL import Image
+import io
 
 # 1. PAGE SETUP
 st.set_page_config(page_title="RRM Master Portal", layout="wide")
-
-# Custom CSS for Mobile
 st.markdown("<style>button {height: 3em !important; font-size: 1.1rem !important;}</style>", unsafe_allow_html=True)
 
 # 2. CONFIG & GITHUB SETTINGS
@@ -18,7 +18,7 @@ REPO_NAME = st.secrets.get("REPO_NAME")
 DATA_DIR = "data"
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 
-U_PATH, C_PATH, L_PATH, T_PATH = "data/users.csv", "data/clients.csv", "data/logs.csv", "data/tasks.csv"
+U_PATH, C_PATH, L_PATH, T_PATH, P_PATH = "data/users.csv", "data/clients.csv", "data/logs.csv", "data/tasks.csv", "data/photos.csv"
 
 # --- TIMEZONE FIX ---
 def get_mst_time():
@@ -32,11 +32,9 @@ def pull_from_github(path):
         res = requests.get(url, headers=headers)
         if res.status_code == 200:
             content = base64.b64decode(res.json()['content']).decode('utf-8')
-            with open(path, "w") as f:
-                f.write(content)
+            with open(path, "w") as f: f.write(content)
             return True
-    except Exception as e:
-        st.error(f"Sync Error: {e}")
+    except: pass
     return False
 
 def push_to_github(path):
@@ -54,13 +52,13 @@ def push_to_github(path):
 
 # 4. BLOCKING STARTUP
 if 'booted' not in st.session_state:
-    with st.spinner("🔄 Syncing with Cloud Database..."):
-        for p in [U_PATH, C_PATH, L_PATH, T_PATH]:
+    with st.spinner("🔄 Syncing Cloud Data..."):
+        for p in [U_PATH, C_PATH, L_PATH, T_PATH, P_PATH]:
             pull_from_github(p)
         time.sleep(1)
     st.session_state.booted = True
 
-# 5. DATA LOADING HELPERS
+# 5. DATA LOADING
 def load_data(path, columns):
     if not os.path.exists(path):
         pd.DataFrame(columns=columns).to_csv(path, index=False)
@@ -68,181 +66,159 @@ def load_data(path, columns):
         df = pd.read_csv(path, dtype={'PIN': str, 'Unit': str})
     except:
         df = pd.read_csv(path)
-    if not all(col in df.columns for col in columns):
-        df = pd.DataFrame(columns=columns)
-        df.to_csv(path, index=False)
     return df
 
 ud = load_data(U_PATH, ["User", "PIN", "Rate"])
 cd = load_data(C_PATH, ["Client", "Address"])
 ld = load_data(L_PATH, ["User", "Client", "In", "Out", "Date", "Notes", "Duration"])
 td = load_data(T_PATH, ["Tech", "Client", "Unit", "Status"])
+pd_photos = load_data(P_PATH, ["Date", "User", "Client", "Unit", "Type", "PhotoData"])
 
-# 6. AUTHENTICATION
-if 'auth' not in st.session_state: 
-    st.session_state.auth = False
+# 6. PHOTO HELPER
+def save_photo(user, client, unit, p_type, uploaded_file):
+    if uploaded_file:
+        img = Image.open(uploaded_file)
+        img.thumbnail((800, 800))
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=70)
+        encoded_string = base64.b64encode(buffer.getvalue()).decode()
+        new_photo = pd.DataFrame([{"Date": get_mst_time().strftime('%Y-%m-%d'), "User": user, "Client": client, "Unit": str(unit), "Type": p_type, "PhotoData": encoded_string}])
+        global pd_photos
+        pd_photos = pd.concat([pd_photos, new_photo], ignore_index=True)
+        pd_photos.to_csv(P_PATH, index=False)
+        push_to_github(P_PATH)
 
+# 7. AUTHENTICATION
+if 'auth' not in st.session_state: st.session_state.auth = False
 if not st.session_state.auth:
     st.title("🔐 RRM Portal Login")
-    u_type = st.radio("Select Login Type", ["Admin", "Technician"])
-    
+    u_type = st.radio("Mode", ["Admin", "Technician"])
     if u_type == "Admin":
-        admin_pin = st.text_input("Admin PIN", type="password")
-        if st.button("Access Admin Portal"):
-            if admin_pin == "0000":
+        pin = st.text_input("Admin PIN", type="password")
+        if st.button("Access Admin"):
+            if pin == "0000":
                 st.session_state.update({"auth": True, "role": "Admin", "user": "Admin"})
                 st.rerun()
-            else: st.error("Invalid PIN")
     else:
-        if ud.empty: 
-            st.warning("No staff found. Please wait 5 seconds and refresh.")
-            if st.button("Retry Sync"):
-                st.session_state.clear()
-                st.rerun()
-            st.stop()
-        t_name = st.selectbox("Select Your Name", ud['User'].tolist())
-        t_pin_input = st.text_input("Enter Your PIN", type="password")
-        if st.button("Technician Login"):
-            user_row = ud[ud['User'] == t_name]
-            actual_pin = str(user_row.iloc[0]['PIN']).zfill(4)
-            if t_pin_input.strip().zfill(4) == actual_pin:
+        if ud.empty: st.warning("No staff found."); st.stop()
+        t_name = st.selectbox("Name", ud['User'].tolist())
+        t_pin = st.text_input("PIN", type="password")
+        if st.button("Login"):
+            actual = str(ud[ud['User'] == t_name].iloc[0]['PIN']).zfill(4)
+            if t_pin.strip().zfill(4) == actual:
                 st.session_state.update({"auth": True, "role": "Tech", "user": t_name})
                 st.rerun()
-            else: st.error("Incorrect PIN")
     st.stop()
 
-# 7. SIDEBAR NAVIGATION
-st.sidebar.title(f"User: {st.session_state.user}")
-view = st.session_state.role if st.session_state.role == "Tech" else st.sidebar.radio("Navigation", ["Admin Dashboard", "Field Portal"])
-
+# 8. NAVIGATION
+view = st.session_state.role if st.session_state.role == "Tech" else st.sidebar.radio("Nav", ["Admin", "Field Portal"])
 if st.sidebar.button("Log Out"):
-    st.session_state.clear()
-    st.rerun()
+    st.session_state.clear(); st.rerun()
 
-# 8. ADMIN DASHBOARD
-if view == "Admin Dashboard":
+# 9. ADMIN DASHBOARD
+if view == "Admin":
     st.title("🛠️ Admin Dashboard")
-    tabs = st.tabs(["Dispatch", "Staff Management", "Client Management", "Work History"])
+    t1, t2, t3, t4, t5 = st.tabs(["Dispatch", "Staff", "Clients", "Work History", "Photos & Reports"])
     
-    with tabs[0]:
-        st.subheader("Assign Job to Tech")
-        with st.form("dispatch_form"):
-            t = st.selectbox("Worker", ud['User']) if not ud.empty else "None"
-            c = st.selectbox("Client", cd['Client']) if not cd.empty else "None"
-            u = st.text_input("Unit #")
-            if st.form_submit_button("Send Job"):
-                if t != "None" and c != "None":
-                    new_t = pd.DataFrame([{"Tech":t,"Client":c,"Unit":str(u),"Status":"Pending"}])
-                    td = pd.concat([td, new_t], ignore_index=True)
-                    td.to_csv(T_PATH, index=False); push_to_github(T_PATH); st.success("Dispatched!"); st.rerun()
+    with t1:
+        with st.form("dispatch"):
+            tech, client, unit = st.selectbox("Tech", ud['User']), st.selectbox("Client", cd['Client']), st.text_input("Unit")
+            if st.form_submit_button("Send"):
+                new_t = pd.DataFrame([{"Tech":tech,"Client":client,"Unit":str(unit),"Status":"Pending"}])
+                td = pd.concat([td, new_t], ignore_index=True); td.to_csv(T_PATH, index=False); push_to_github(T_PATH); st.rerun()
         st.dataframe(td, use_container_width=True)
 
-    with tabs[1]:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Add New Staff")
-            with st.form("staff_form"):
-                sn, sp, sr = st.text_input("Name"), st.text_input("PIN"), st.number_input("Rate", 25.0)
-                if st.form_submit_button("Save New Staff"):
-                    new_staff = pd.DataFrame([{"User":sn,"PIN":str(sp).zfill(4),"Rate":sr}])
-                    ud = pd.concat([ud, new_staff], ignore_index=True)
-                    ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.success("Saved!"); st.rerun()
-        
-        with col2:
-            st.subheader("Edit/Delete Staff")
-            if not ud.empty:
-                edit_user = st.selectbox("Select Staff to Edit", ud['User'].tolist())
-                user_data = ud[ud['User'] == edit_user].iloc[0]
-                with st.form("edit_staff_form"):
-                    new_n = st.text_input("Edit Name", value=user_data['User'])
-                    new_p = st.text_input("Edit PIN", value=user_data['PIN'])
-                    new_r = st.number_input("Edit Rate", value=float(user_data['Rate']))
-                    c1, c2 = st.columns(2)
-                    if c1.form_submit_button("Update Info"):
-                        ud.loc[ud['User'] == edit_user, ['User', 'PIN', 'Rate']] = [new_n, str(new_p).zfill(4), new_r]
-                        ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.success("Updated!"); st.rerun()
-                    if c2.form_submit_button("🗑️ Delete Staff"):
-                        ud = ud[ud['User'] != edit_user]
-                        ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.warning("Deleted"); st.rerun()
+    with t2:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            with st.form("add_staff"):
+                n, p, r = st.text_input("Name"), st.text_input("PIN"), st.number_input("Rate", 25.0)
+                if st.form_submit_button("Add"):
+                    ud = pd.concat([ud, pd.DataFrame([{"User":n,"PIN":str(p).zfill(4),"Rate":r}])], ignore_index=True)
+                    ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.rerun()
+        st.dataframe(ud)
 
-    with tabs[2]:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Add New Client")
-            with st.form("client_form"):
-                cn, ca = st.text_input("Company Name"), st.text_input("Address")
-                if st.form_submit_button("Save New Client"):
-                    new_client = pd.DataFrame([{"Client":cn,"Address":ca}])
-                    cd = pd.concat([cd, new_client], ignore_index=True)
-                    cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.success("Saved!"); st.rerun()
-        
-        with col2:
-            st.subheader("Edit/Delete Client")
-            if not cd.empty:
-                edit_client = st.selectbox("Select Client to Edit", cd['Client'].tolist())
-                client_data = cd[cd['Client'] == edit_client].iloc[0]
-                with st.form("edit_client_form"):
-                    new_cn = st.text_input("Edit Name", value=client_data['Client'])
-                    new_ca = st.text_input("Edit Address", value=client_data['Address'])
-                    c1, c2 = st.columns(2)
-                    if c1.form_submit_button("Update Client"):
-                        cd.loc[cd['Client'] == edit_client, ['Client', 'Address']] = [new_cn, new_ca]
-                        cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.success("Updated!"); st.rerun()
-                    if c2.form_submit_button("🗑️ Delete Client"):
-                        cd = cd[cd['Client'] != edit_client]
-                        cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.warning("Deleted"); st.rerun()
+    with t3:
+        with st.form("add_client"):
+            cn, ca = st.text_input("Client"), st.text_input("Address")
+            if st.form_submit_button("Add"):
+                cd = pd.concat([cd, pd.DataFrame([{"Client":cn,"Address":ca}])], ignore_index=True)
+                cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.rerun()
+        st.dataframe(cd)
 
-    with tabs[3]:
-        st.subheader("Master Logs (MST)")
+    with t4:
         st.dataframe(ld, use_container_width=True)
 
-# 9. TECHNICIAN PORTAL
+    with t5:
+        st.subheader("Photo & Client Report Generator")
+        if not ld.empty:
+            log_choice = st.selectbox("Select a Job Entry to Report", ld.index, format_func=lambda x: f"{ld.iloc[x]['Date']} - {ld.iloc[x]['Client']} (Unit: {ld.iloc[x]['User']})")
+            selected_job = ld.iloc[log_choice]
+            
+            # Find photos for this job
+            job_photos = pd_photos[(pd_photos['Client'] == selected_job['Client']) & (pd_photos['Date'] == selected_job['Date'])]
+            
+            report_text = f"WORK REPORT\nClient: {selected_job['Client']}\nDate: {selected_job['Date']}\nTechnician: {selected_job['User']}\nWork Conducted: {selected_job['Notes']}\nDuration: {selected_job['Duration']}"
+            st.text_area("Email Content (Copy/Paste)", report_text, height=150)
+            
+            if not job_photos.empty:
+                for idx, p_row in job_photos.iterrows():
+                    img_bytes = base64.b64decode(p_row['PhotoData'])
+                    st.image(img_bytes, caption=f"Photo Type: {p_row['Type']}")
+                    st.download_button(label=f"Download {p_row['Type']} Photo", data=img_bytes, file_name=f"{selected_job['Client']}_{p_row['Type']}.jpg", mime="image/jpeg")
+            else:
+                st.info("No photos found for this specific job date/client.")
+
+# 10. TECHNICIAN PORTAL
 else:
-    st.title("📱 Technician Field Portal")
+    st.title("📱 Technician Portal")
     if 'job' not in st.session_state:
-        st.subheader("📌 Your Active Tasks")
+        st.subheader("📌 Assigned Tasks")
         tasks = td[(td['Tech'] == st.session_state.user) & (td['Status'] == 'Pending')]
-        if not tasks.empty:
-            for i, r in tasks.iterrows():
-                with st.container(border=True):
-                    st.write(f"**{r['Client']}** - Unit: {r['Unit']}")
-                    if st.button(f"Clock In: {r['Client']}", key=f"d_btn_{i}"):
-                        st.session_state.job = {"c": r['Client'], "u": str(r['Unit']), "type": "D"}
-                        st.session_state.start = get_mst_time(); st.rerun()
-        else: st.info("No assigned jobs.")
+        for i, r in tasks.iterrows():
+            with st.container(border=True):
+                st.write(f"**{r['Client']}** - Unit: {r['Unit']}")
+                if st.button(f"Clock In: {r['Client']}", key=f"in_{i}"):
+                    st.session_state.job = {"c": r['Client'], "u": str(r['Unit']), "type": "D"}
+                    st.session_state.start = get_mst_time(); st.rerun()
         
         st.divider()
-        st.subheader("⚡ Start New Job")
-        is_new = st.checkbox("➕ Add New/Unlisted Client")
-        m_client = st.text_input("Type Client Name") if is_new else st.selectbox("Select Client", ["-- Select --"] + cd['Client'].tolist())
-        m_unit = st.text_input("Unit #")
-        
-        if st.button("Start Work Now"):
-            if m_client in ["-- Select --", ""]: st.error("Select a client.")
-            else:
-                st.session_state.job = {"c": m_client, "u": str(m_unit), "type": "M"}
-                st.session_state.start = get_mst_time(); st.rerun()
+        st.subheader("⚡ Manual Job")
+        is_new = st.checkbox("New Client?")
+        m_c = st.text_input("Name") if is_new else st.selectbox("Select", ["--"] + cd['Client'].tolist())
+        m_u = st.text_input("Unit #")
+        if st.button("Start Now"):
+            st.session_state.job = {"c": m_c, "u": str(m_u), "type": "M"}
+            st.session_state.start = get_mst_time(); st.rerun()
+    
     else:
-        st.success(f"ACTIVE JOB: {st.session_state.job['c']}")
-        st.write(f"Started at: {st.session_state.start.strftime('%I:%M %p')}")
-        notes = st.text_area("Work Notes")
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("⌛ PAUSE", use_container_width=True):
-                end_t = get_mst_time()
-                dur = str(end_t - st.session_state.start).split(".")[0]
-                new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": f"[PARTIAL] {notes}", "Duration": dur}])
-                ld = pd.concat([ld, new_log], ignore_index=True); ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
-                if st.session_state.job['type'] == "M":
-                    new_task = pd.DataFrame([{"Tech": st.session_state.user, "Client": st.session_state.job['c'], "Unit": st.session_state.job['u'], "Status": "Pending"}])
-                    td = pd.concat([td, new_task], ignore_index=True); td.to_csv(T_PATH, index=False); push_to_github(T_PATH)
-                del st.session_state.job; st.rerun()
-        with c2:
-            if st.button("🏁 FINALIZE", type="primary", use_container_width=True):
-                end_t = get_mst_time()
-                dur = str(end_t - st.session_state.start).split(".")[0]
-                new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": notes, "Duration": dur}])
-                ld = pd.concat([ld, new_log], ignore_index=True); ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
-                td.loc[(td['Tech'] == st.session_state.user) & (td['Client'] == st.session_state.job['c']) & (td['Unit'] == st.session_state.job['u']), 'Status'] = 'Done'
-                td.to_csv(T_PATH, index=False); push_to_github(T_PATH)
-                del st.session_state.job; st.rerun()
+        st.info(f"WORKING: {st.session_state.job['c']}")
+        if 'before_taken' not in st.session_state:
+            st.subheader("📸 Before Photos (Optional)")
+            before_file = st.file_uploader("Capture Before Photo", type=['jpg','png','jpeg'], key="before")
+            if st.button("Continue to Job"):
+                if before_file: save_photo(st.session_state.user, st.session_state.job['c'], st.session_state.job['u'], "Before", before_file)
+                st.session_state.before_taken = True; st.rerun()
+        else:
+            notes = st.text_area("Work Notes")
+            st.subheader("📸 After Photos (Optional)")
+            after_file = st.file_uploader("Capture After Photo", type=['jpg','png','jpeg'], key="after")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("⌛ PAUSE"):
+                    end_t = get_mst_time()
+                    new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": f"[PARTIAL] {notes}", "Duration": str(end_t - st.session_state.start).split(".")[0]}])
+                    ld = pd.concat([ld, new_log], ignore_index=True); ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
+                    if st.session_state.job['type'] == "M":
+                        new_t = pd.DataFrame([{"Tech": st.session_state.user, "Client": st.session_state.job['c'], "Unit": st.session_state.job['u'], "Status": "Pending"}])
+                        td = pd.concat([td, new_t], ignore_index=True); td.to_csv(T_PATH, index=False); push_to_github(T_PATH)
+                    st.session_state.clear(); st.session_state.booted = True; st.rerun()
+            with c2:
+                if st.button("🏁 FINALIZE", type="primary"):
+                    if after_file: save_photo(st.session_state.user, st.session_state.job['c'], st.session_state.job['u'], "After", after_file)
+                    end_t = get_mst_time()
+                    new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": notes, "Duration": str(end_t - st.session_state.start).split(".")[0]}])
+                    ld = pd.concat([ld, new_log], ignore_index=True); ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
+                    td.loc[(td['Tech'] == st.session_state.user) & (td['Client'] == st.session_state.job['c']) & (td['Unit'] == st.session_state.job['u']), 'Status'] = 'Done'
+                    td.to_csv(T_PATH, index=False); push_to_github(T_PATH)
+                    st.session_state.clear(); st.session_state.booted = True; st.rerun()
