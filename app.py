@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import requests
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 1. PAGE SETUP
 st.set_page_config(page_title="RRM Master Portal", layout="wide")
@@ -18,6 +18,11 @@ DATA_DIR = "data"
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 
 U_PATH, C_PATH, L_PATH, T_PATH = "data/users.csv", "data/clients.csv", "data/logs.csv", "data/tasks.csv"
+
+# --- TIMEZONE FIX ---
+# MST is UTC - 7 hours. Change the -7 to -6 if you move to MDT (Daylight Savings)
+def get_mst_time():
+    return datetime.utcnow() - timedelta(hours=7)
 
 # 3. GITHUB SYNC FUNCTIONS
 def pull_from_github(path):
@@ -65,7 +70,7 @@ def load_data(path, columns):
 
 ud = load_data(U_PATH, ["User", "PIN", "Rate"])
 cd = load_data(C_PATH, ["Client", "Address"])
-ld = load_data(L_PATH, ["User", "Client", "In", "Out", "Date", "Notes"])
+ld = load_data(L_PATH, ["User", "Client", "In", "Out", "Date", "Notes", "Duration"])
 td = load_data(T_PATH, ["Tech", "Client", "Unit", "Status"])
 
 # 6. AUTHENTICATION
@@ -144,7 +149,7 @@ if view == "Admin Dashboard":
         st.dataframe(cd, use_container_width=True)
 
     with tabs[3]:
-        st.subheader("Master Logs")
+        st.subheader("Master Logs (Times in MST)")
         st.dataframe(ld, use_container_width=True)
 
 # 9. TECHNICIAN PORTAL
@@ -160,7 +165,7 @@ else:
                     st.write(f"**{r['Client']}** - Unit: {r['Unit']}")
                     if st.button(f"Clock In: {r['Client']}", key=f"d_btn_{i}"):
                         st.session_state.job = {"c": r['Client'], "u": str(r['Unit']), "type": "D"}
-                        st.session_state.start = datetime.now(); st.rerun()
+                        st.session_state.start = get_mst_time(); st.rerun()
         else:
             st.info("No assigned jobs currently.")
         
@@ -178,7 +183,7 @@ else:
                 st.error("Select/type a client.")
             else:
                 st.session_state.job = {"c": m_client, "u": str(m_unit), "type": "M"}
-                st.session_state.start = datetime.now(); st.rerun()
+                st.session_state.start = get_mst_time(); st.rerun()
 
     else:
         st.success(f"ACTIVE JOB: {st.session_state.job['c']}")
@@ -189,27 +194,21 @@ else:
         
         with col1:
             if st.button("⌛ PAUSE (CLOCK OUT ONLY)", use_container_width=True):
-                end_t = datetime.now()
-                # Log the time but DON'T change task status
-                new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": f"[PARTIAL] {notes}"}])
+                end_t = get_mst_time()
+                dur = str(end_t - st.session_state.start).split(".")[0]
+                new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": f"[PARTIAL] {notes}", "Duration": dur}])
                 ld = pd.concat([ld, new_log], ignore_index=True); ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
-                
-                # If it was a manual job, we must add it to the pending list so they can return to it
                 if st.session_state.job['type'] == "M":
                     new_task = pd.DataFrame([{"Tech": st.session_state.user, "Client": st.session_state.job['c'], "Unit": st.session_state.job['u'], "Status": "Pending"}])
                     td = pd.concat([td, new_task], ignore_index=True); td.to_csv(T_PATH, index=False); push_to_github(T_PATH)
-                
                 del st.session_state.job; st.success("Progress Saved"); st.rerun()
 
         with col2:
             if st.button("🏁 FINALIZE & CLOSE JOB", type="primary", use_container_width=True):
-                end_t = datetime.now()
-                # Log the time
-                new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": notes}])
+                end_t = get_mst_time()
+                dur = str(end_t - st.session_state.start).split(".")[0]
+                new_log = pd.DataFrame([{"User": st.session_state.user, "Client": st.session_state.job['c'], "In": st.session_state.start.strftime('%H:%M'), "Out": end_t.strftime('%H:%M'), "Date": end_t.strftime('%Y-%m-%d'), "Notes": notes, "Duration": dur}])
                 ld = pd.concat([ld, new_log], ignore_index=True); ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
-                
-                # Mark as Done
                 td.loc[(td['Tech'] == st.session_state.user) & (td['Client'] == st.session_state.job['c']) & (td['Unit'] == st.session_state.job['u']), 'Status'] = 'Done'
                 td.to_csv(T_PATH, index=False); push_to_github(T_PATH)
-                
                 del st.session_state.job; st.success("Job Completed"); st.rerun()
