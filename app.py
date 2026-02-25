@@ -4,7 +4,7 @@ import os, requests, base64, io
 from datetime import datetime, timedelta
 from PIL import Image
 
-# 1. SETUP & STYLES (Fixed Syntax)
+# 1. SETUP & STYLES
 st.set_page_config(page_title="RRM Portal", layout="wide")
 st.markdown("""
     <style>
@@ -85,7 +85,8 @@ if st.sidebar.button("Logout"): st.query_params.clear(); st.session_state.clear(
 
 # 6. ADMIN DASHBOARD
 if view == "Admin":
-    t1, t2, t3, t4 = st.tabs(["Dispatch", "Management", "Work History", "Reports"])
+    t1, t2, t3 = st.tabs(["Dispatch", "Management", "Work History"])
+    
     with t1:
         with st.form("disp"):
             t, cl, u = st.selectbox("Tech", ud['User']), st.selectbox("Client", cd['Client']), st.text_input("Unit")
@@ -93,21 +94,39 @@ if view == "Admin":
                 td = pd.concat([td, pd.DataFrame([{"Tech":t,"Client":cl,"Unit":u,"Status":"Pending"}])])
                 td.to_csv(PATHS["t"], index=False); sync(PATHS["t"], "push"); st.rerun()
         st.write(td[td['Status']=="Pending"])
-    
+
     with t2:
-        col1, col2 = st.columns(2)
-        with col1:
-            with st.form("add_s"):
-                n, p, r = st.text_input("Name"), st.text_input("PIN"), st.number_input("Rate", 25.0)
-                if st.form_submit_button("Add Staff"):
+        st.subheader("Staff & Clients")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.write("---")
+            with st.form("staff"):
+                s_action = st.radio("Staff Action", ["Add", "Edit/Delete"], horizontal=True)
+                target = st.selectbox("Select Staff", ud['User'].tolist()) if s_action == "Edit/Delete" else ""
+                n = st.text_input("Name", value=target if target else "")
+                p = st.text_input("PIN", value=str(ud[ud['User']==target]['PIN'].iloc[0]) if target else "")
+                r = st.number_input("Rate", value=float(ud[ud['User']==target]['Rate'].iloc[0]) if target else 25.0)
+                sub = st.form_submit_button("Save Staff")
+                if sub:
+                    if s_action == "Edit/Delete": ud = ud[ud['User'] != target]
                     ud = pd.concat([ud, pd.DataFrame([{"User":n,"PIN":p.zfill(4),"Rate":r}])])
                     ud.to_csv(PATHS["u"], index=False); sync(PATHS["u"], "push"); st.rerun()
-        with col2:
-            with st.form("add_c"):
-                cn, ca = st.text_input("Client"), st.text_input("Address")
-                if st.form_submit_button("Add Client"):
+            if target and st.button("🗑️ Delete Staff"):
+                ud = ud[ud['User']!=target]; ud.to_csv(PATHS["u"], index=False); sync(PATHS["u"], "push"); st.rerun()
+        with c2:
+            st.write("---")
+            with st.form("client"):
+                c_action = st.radio("Client Action", ["Add", "Edit/Delete"], horizontal=True)
+                target_c = st.selectbox("Select Client", cd['Client'].tolist()) if c_action == "Edit/Delete" else ""
+                cn = st.text_input("Client Name", value=target_c if target_c else "")
+                ca = st.text_input("Address", value=cd[cd['Client']==target_c]['Address'].iloc[0] if target_c else "")
+                sub_c = st.form_submit_button("Save Client")
+                if sub_c:
+                    if c_action == "Edit/Delete": cd = cd[cd['Client'] != target_c]
                     cd = pd.concat([cd, pd.DataFrame([{"Client":cn,"Address":ca}])])
                     cd.to_csv(PATHS["c"], index=False); sync(PATHS["c"], "push"); st.rerun()
+            if target_c and st.button("🗑️ Delete Client"):
+                cd = cd[cd['Client']!=target_c]; cd.to_csv(PATHS["c"], index=False); sync(PATHS["c"], "push"); st.rerun()
 
     with t3:
         st.subheader("Work History")
@@ -119,24 +138,21 @@ if view == "Admin":
         f_ld = ld[mask & ld['User'].isin(f_tech)].sort_values("Date", ascending=False)
         if f_s != "All": f_ld = f_ld[f_ld['Notes'].str.contains(f"\[{f_s.upper()}\]", na=False)]
         
-        # Payroll Logic
         def to_hours(td_str):
-            try:
-                h, m, s = map(int, td_str.split(':'))
-                return h + m/60 + s/3600
+            try: h, m, s = map(int, td_str.split(':')); return h + m/60 + s/3600
             except: return 0
-        total_h = f_ld['Duration'].apply(to_hours).sum()
-        st.metric("Total Hours for Selection", f"{total_h:.2f} hrs")
+        st.metric("Total Hours", f"{f_ld['Duration'].apply(to_hours).sum():.2f} hrs")
         
-        st.dataframe(f_ld.style.applymap(lambda x: 'background-color: #d4edda' if '[COMPLETE]' in str(x) else ('background-color: #fff3cd' if '[PAUSED]' in str(x) else ''), subset=['Notes']))
-
-    with t4:
-        if not ld.empty:
-            sel_i = st.selectbox("Log", ld.index, format_func=lambda x: f"{ld.iloc[x]['Date']} - {ld.iloc[x]['Client']}")
-            sel = ld.iloc[sel_i]
-            st.write(sel.to_dict())
-            ph = pd_photos[(pd_photos['Client']==sel['Client']) & (pd_photos['Date']==str(sel['Date']))]
-            for _, p in ph.iterrows(): st.image(base64.b64decode(p['PhotoData']), caption=p['Type'])
+        st.dataframe(f_ld.style.applymap(lambda x: 'background-color: #d4edda' if '[COMPLETE]' in str(x) else ('background-color: #fff3cd' if '[PAUSED]' in str(x) else ''), subset=['Notes']), use_container_width=True)
+        
+        st.divider()
+        if not f_ld.empty:
+            sel_row = st.selectbox("Select a row to view photos/details", f_ld.index, format_func=lambda x: f"{f_ld.loc[x, 'Date']} - {f_ld.loc[x, 'Client']}")
+            det = f_ld.loc[sel_row]
+            st.info(f"**Notes:** {det['Notes']}")
+            ph = pd_photos[(pd_photos['Client']==det['Client']) & (pd_photos['Date']==str(det['Date']))]
+            cols = st.columns(len(ph) if len(ph) > 0 else 1)
+            for i, (_, p) in enumerate(ph.iterrows()): cols[i].image(base64.b64decode(p['PhotoData']), caption=p['Type'])
 
 # 7. FIELD PORTAL
 else:
