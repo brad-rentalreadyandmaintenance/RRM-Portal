@@ -85,7 +85,10 @@ def get_cached_data(path, columns):
     if not os.path.exists(path):
         pd.DataFrame(columns=columns).to_csv(path, index=False)
     try:
-        return pd.read_csv(path, dtype={'PIN': str, 'Unit': str})
+        df = pd.read_csv(path, dtype={'PIN': str, 'Unit': str})
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date']).dt.date
+        return df
     except:
         return pd.DataFrame(columns=columns)
 
@@ -210,20 +213,34 @@ if view == "Admin Dashboard":
                         st.cache_data.clear(); st.rerun()
 
     with t4:
-        st.subheader("🔍 Filter Work Logs")
-        ca, cb, cc = st.columns(3)
-        f_user = ca.multiselect("Technician", options=ld['User'].unique(), default=ld['User'].unique())
-        f_client = cb.multiselect("Location", options=ld['Client'].unique(), default=ld['Client'].unique())
-        f_status = cc.radio("Status", ["All", "Complete Only", "Paused Only"], horizontal=True)
-        filtered_ld = ld[(ld['User'].isin(f_user)) & (ld['Client'].isin(f_client))]
+        st.subheader("🔍 Advanced Filters")
+        r1_a, r1_b = st.columns(2)
+        with r1_a:
+            date_range = st.date_input("Date Range", value=[get_mst_time().date() - timedelta(days=7), get_mst_time().date()])
+        with r1_b:
+            f_status = st.radio("Status", ["All", "Complete Only", "Paused Only"], horizontal=True)
+        
+        r2_a, r2_b = st.columns(2)
+        f_user = r2_a.multiselect("Technician", options=ld['User'].unique(), default=ld['User'].unique())
+        f_client = r2_b.multiselect("Location", options=ld['Client'].unique(), default=ld['Client'].unique())
+        
+        # Filtering Logic
+        mask = (ld['User'].isin(f_user)) & (ld['Client'].isin(f_client))
+        if len(date_range) == 2:
+            mask = mask & (ld['Date'] >= date_range[0]) & (ld['Date'] <= date_range[1])
+        
+        filtered_ld = ld[mask].sort_values(by="Date", ascending=False)
+        
         if f_status == "Complete Only": 
             filtered_ld = filtered_ld[filtered_ld['Notes'].str.contains("\[COMPLETE\]", na=False)]
         elif f_status == "Paused Only": 
             filtered_ld = filtered_ld[filtered_ld['Notes'].str.contains("\[PAUSED\]", na=False)]
+        
         def color_status(val):
             if "[COMPLETE]" in str(val): return 'background-color: #d4edda'
             if "[PAUSED]" in str(val): return 'background-color: #fff3cd'
             return ''
+            
         st.dataframe(filtered_ld.style.applymap(color_status, subset=['Notes']), use_container_width=True)
 
     with t5:
