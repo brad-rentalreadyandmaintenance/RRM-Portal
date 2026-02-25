@@ -19,7 +19,55 @@ def process_image(uploaded_file):
         img = ImageOps.exif_transpose(img)
         img.thumbnail((600, 600), Image.Resampling.LANCZOS)
         if img.mode in ("RGBA", "P"): img = img.convert("RGB")
+        buf = io.BytesIO()import streamlit as st
+import pandas as pd
+import os, requests, base64, io
+from datetime import datetime, timedelta
+from PIL import Image, ImageOps
+
+# 1. SETUP & CONFIG
+st.set_page_config(page_title="RRM Portal v2.9", layout="wide")
+GIT_T, REPO = st.secrets.get("GITHUB_TOKEN"), st.secrets.get("REPO_NAME")
+PATHS = {"u": "data/users.csv", "c": "data/clients.csv", "l": "data/logs.csv", "t": "data/tasks.csv", "p": "data/photos.csv", "m": "data/materials.csv"}
+if not os.path.exists("data"): os.makedirs("data")
+
+def get_mst(): return datetime.utcnow() - timedelta(hours=7)
+
+# MOBILE-SAFE IMAGE PROCESSING
+def process_image(uploaded_file):
+    if uploaded_file is None: return None
+    try:
+        img = Image.open(uploaded_file)
+        img = ImageOps.exif_transpose(img) # Fix rotation
+        img.thumbnail((600, 600), Image.Resampling.LANCZOS) # Scale down for RAM
+        if img.mode in ("RGBA", "P"): img = img.convert("RGB")
         buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=60, optimize=True)
+        return base64.b64encode(buf.getvalue()).decode()
+    except: return None
+
+# 2. SYNC ENGINE
+def sync(path, mode="pull"):
+    url = f"https://api.github.com/repos/{REPO}/contents/{path}"
+    headers = {"Authorization": f"token {GIT_T}", "Accept": "application/vnd.github.v3+json"}
+    try:
+        res = requests.get(url, headers=headers)
+        if mode == "pull":
+            if res.status_code == 200:
+                content = base64.b64decode(res.json()['content']).decode('utf-8')
+                with open(path, "w") as f: f.write(content)
+                return True
+        elif mode == "push":
+            sha = res.json().get('sha') if res.status_code == 200 else None
+            with open(path, "rb") as f: content = base64.b64encode(f.read()).decode("utf-8")
+            payload = {"message": f"Sync {path}", "content": content, "branch": "master"}
+            if sha: payload["sha"] = sha
+            requests.put(url, headers=headers, json=payload)
+    except: pass
+    return False
+
+def load_data():
+    for p in PATHS.values():
         img.save(buf, format="JPEG", quality=60, optimize=True)
         return base64.b64encode(buf.getvalue()).decode()
     except: return None
@@ -183,3 +231,4 @@ else:
                 td.loc[td['TaskID']==st.session_state.job['TaskID'], 'Status'] = 'Done'
                 td.to_csv(PATHS["t"], index=False); sync(PATHS["t"], "push")
                 del st.session_state.job; del st.session_state.photo_step; st.rerun()
+
