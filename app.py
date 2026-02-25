@@ -21,7 +21,6 @@ U_PATH, C_PATH, L_PATH, T_PATH = "data/users.csv", "data/clients.csv", "data/log
 
 # 3. GITHUB SYNC FUNCTIONS
 def pull_from_github(path):
-    """Pulls the latest file from GitHub to local storage on boot."""
     try:
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
@@ -33,7 +32,6 @@ def pull_from_github(path):
     except: pass
 
 def push_to_github(path):
-    """Saves local changes up to GitHub."""
     try:
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
@@ -46,17 +44,22 @@ def push_to_github(path):
         requests.put(url, headers=headers, json=payload)
     except: pass
 
-# 4. STARTUP BOOT (Syncs data from GitHub only once per session)
+# 4. STARTUP BOOT
 if 'booted' not in st.session_state:
     for p in [U_PATH, C_PATH, L_PATH, T_PATH]:
         pull_from_github(p)
     st.session_state.booted = True
 
-# 5. DATA LOADING HELPERS
+# 5. DATA LOADING HELPERS (Updated to treat PIN as String)
 def load_data(path, columns):
     if not os.path.exists(path):
         pd.DataFrame(columns=columns).to_csv(path, index=False)
-    df = pd.read_csv(path)
+    # dtype={'PIN': str} ensures leading zeros are NOT dropped when reading
+    try:
+        df = pd.read_csv(path, dtype={'PIN': str, 'Unit': str})
+    except:
+        df = pd.read_csv(path)
+        
     if not all(col in df.columns for col in columns):
         df = pd.DataFrame(columns=columns)
         df.to_csv(path, index=False)
@@ -67,7 +70,7 @@ cd = load_data(C_PATH, ["Client", "Address"])
 ld = load_data(L_PATH, ["User", "Client", "In", "Out", "Date", "Notes"])
 td = load_data(T_PATH, ["Tech", "Client", "Unit", "Status"])
 
-# 6. AUTHENTICATION (Persists through refresh)
+# 6. AUTHENTICATION
 if 'auth' not in st.session_state: 
     st.session_state.auth = False
 
@@ -90,12 +93,13 @@ if not st.session_state.auth:
         t_name = st.selectbox("Select Your Name", ud['User'].tolist())
         t_pin_input = st.text_input("Enter Your PIN", type="password")
         if st.button("Technician Login"):
-            actual_pin = str(ud[ud['User'] == t_name].iloc[0]['PIN'])
-            if t_pin_input == actual_pin:
+            # Compare as strings to respect leading zeros
+            actual_pin = str(ud[ud['User'] == t_name].iloc[0]['PIN']).zfill(4)
+            if t_pin_input.strip().zfill(4) == actual_pin:
                 st.session_state.update({"auth": True, "role": "Tech", "user": t_name})
                 st.rerun()
             else:
-                st.error("Incorrect PIN")
+                st.error(f"Incorrect PIN")
     st.stop()
 
 # 7. SIDEBAR NAVIGATION
@@ -119,7 +123,7 @@ if view == "Admin Dashboard":
             u = st.text_input("Unit #")
             if st.form_submit_button("Send Job"):
                 if t != "None" and c != "None":
-                    new_t = pd.DataFrame([{"Tech":t,"Client":c,"Unit":u,"Status":"Pending"}])
+                    new_t = pd.DataFrame([{"Tech":t,"Client":c,"Unit":str(u),"Status":"Pending"}])
                     td = pd.concat([td, new_t], ignore_index=True)
                     td.to_csv(T_PATH, index=False); push_to_github(T_PATH); st.success("Dispatched!"); st.rerun()
         st.dataframe(td, use_container_width=True)
@@ -128,10 +132,12 @@ if view == "Admin Dashboard":
         st.subheader("Add New Staff")
         with st.form("staff_form"):
             sn = st.text_input("Name")
-            sp = st.text_input("PIN (4 Digits)")
+            sp = st.text_input("PIN (e.g. 0123)")
             sr = st.number_input("Hourly Rate", value=25.0)
             if st.form_submit_button("Save Staff"):
-                new_u = pd.DataFrame([{"User":sn,"PIN":sp,"Rate":sr}])
+                # Force PIN to be a string with leading zeros
+                formatted_pin = str(sp).zfill(4)
+                new_u = pd.DataFrame([{"User":sn,"PIN":formatted_pin,"Rate":sr}])
                 ud = pd.concat([ud, new_u], ignore_index=True)
                 ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.success("Staff Saved!"); st.rerun()
         st.dataframe(ud, use_container_width=True)
@@ -156,7 +162,6 @@ else:
     st.title("📱 Technician Field Portal")
     
     if 'job' not in st.session_state:
-        # Section A: Dispatched Jobs
         st.subheader("📌 Your Assigned Tasks")
         tasks = td[(td['Tech'] == st.session_state.user) & (td['Status'] == 'Pending')]
         if not tasks.empty:
@@ -164,35 +169,31 @@ else:
                 with st.container(border=True):
                     st.write(f"**{r['Client']}** - Unit: {r['Unit']}")
                     if st.button(f"Clock In: {r['Client']}", key=f"d_btn_{i}"):
-                        st.session_state.job = {"c": r['Client'], "u": r['Unit'], "type": "D"}
+                        st.session_state.job = {"c": r['Client'], "u": str(r['Unit']), "type": "D"}
                         st.session_state.start = datetime.now()
                         st.rerun()
         else:
             st.info("No assigned jobs currently.")
         
         st.divider()
-        
-        # Section B: Manual Clock In
         st.subheader("⚡ Start New (Unassigned) Job")
         if not cd.empty:
             m_client = st.selectbox("Select Client", cd['Client'].tolist())
             m_unit = st.text_input("Unit # (Optional)")
             if st.button("Start Work Now"):
-                st.session_state.job = {"c": m_client, "u": m_unit, "type": "M"}
+                st.session_state.job = {"c": m_client, "u": str(m_unit), "type": "M"}
                 st.session_state.start = datetime.now()
                 st.rerun()
         else:
             st.warning("No clients found in system.")
 
     else:
-        # Section C: Active Clock-In
         st.success(f"ACTIVE JOB: {st.session_state.job['c']}")
         st.write(f"Started at: {st.session_state.start.strftime('%I:%M %p')}")
-        notes = st.text_area("Work Notes (Parts used, etc.)")
+        notes = st.text_area("Work Notes")
         
         if st.button("🚩 FINALIZE & CLOCK OUT", type="primary"):
             end_time = datetime.now()
-            # Save Log Entry
             new_log = pd.DataFrame([{
                 "User": st.session_state.user, 
                 "Client": st.session_state.job['c'], 
@@ -204,7 +205,6 @@ else:
             ld = pd.concat([ld, new_log], ignore_index=True)
             ld.to_csv(L_PATH, index=False); push_to_github(L_PATH)
             
-            # If it was a dispatched job, close the ticket
             if st.session_state.job['type'] == "D":
                 td.loc[(td['Tech'] == st.session_state.user) & 
                        (td['Client'] == st.session_state.job['c']) & 
