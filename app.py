@@ -8,7 +8,7 @@ from datetime import datetime
 # 1. PAGE SETUP
 st.set_page_config(page_title="RRM Master Portal", layout="wide")
 
-# Optional: Makes buttons larger and easier to tap on mobile
+# Makes buttons larger and easier to tap on mobile
 st.markdown("<style>button {height: 3em !important; font-size: 1.1rem !important;}</style>", unsafe_allow_html=True)
 
 # 2. CONFIG & GITHUB SETTINGS
@@ -50,16 +50,14 @@ if 'booted' not in st.session_state:
         pull_from_github(p)
     st.session_state.booted = True
 
-# 5. DATA LOADING HELPERS (Updated to treat PIN as String)
+# 5. DATA LOADING HELPERS
 def load_data(path, columns):
     if not os.path.exists(path):
         pd.DataFrame(columns=columns).to_csv(path, index=False)
-    # dtype={'PIN': str} ensures leading zeros are NOT dropped when reading
     try:
         df = pd.read_csv(path, dtype={'PIN': str, 'Unit': str})
     except:
         df = pd.read_csv(path)
-        
     if not all(col in df.columns for col in columns):
         df = pd.DataFrame(columns=columns)
         df.to_csv(path, index=False)
@@ -93,13 +91,12 @@ if not st.session_state.auth:
         t_name = st.selectbox("Select Your Name", ud['User'].tolist())
         t_pin_input = st.text_input("Enter Your PIN", type="password")
         if st.button("Technician Login"):
-            # Compare as strings to respect leading zeros
             actual_pin = str(ud[ud['User'] == t_name].iloc[0]['PIN']).zfill(4)
             if t_pin_input.strip().zfill(4) == actual_pin:
                 st.session_state.update({"auth": True, "role": "Tech", "user": t_name})
                 st.rerun()
             else:
-                st.error(f"Incorrect PIN")
+                st.error("Incorrect PIN")
     st.stop()
 
 # 7. SIDEBAR NAVIGATION
@@ -135,7 +132,6 @@ if view == "Admin Dashboard":
             sp = st.text_input("PIN (e.g. 0123)")
             sr = st.number_input("Hourly Rate", value=25.0)
             if st.form_submit_button("Save Staff"):
-                # Force PIN to be a string with leading zeros
                 formatted_pin = str(sp).zfill(4)
                 new_u = pd.DataFrame([{"User":sn,"PIN":formatted_pin,"Rate":sr}])
                 ud = pd.concat([ud, new_u], ignore_index=True)
@@ -162,6 +158,7 @@ else:
     st.title("📱 Technician Field Portal")
     
     if 'job' not in st.session_state:
+        # Section A: Dispatched Jobs
         st.subheader("📌 Your Assigned Tasks")
         tasks = td[(td['Tech'] == st.session_state.user) & (td['Status'] == 'Pending')]
         if not tasks.empty:
@@ -176,18 +173,31 @@ else:
             st.info("No assigned jobs currently.")
         
         st.divider()
+        
+        # Section B: Manual Clock In (Modified for Flexibile Client Input)
         st.subheader("⚡ Start New (Unassigned) Job")
-        if not cd.empty:
-            m_client = st.selectbox("Select Client", cd['Client'].tolist())
-            m_unit = st.text_input("Unit # (Optional)")
-            if st.button("Start Work Now"):
+        
+        # Client Input Logic
+        client_list = cd['Client'].tolist() if not cd.empty else []
+        is_new_client = st.checkbox("➕ Add New/Unlisted Client")
+        
+        if is_new_client:
+            m_client = st.text_input("Type Client Name")
+        else:
+            m_client = st.selectbox("Select Existing Client", ["-- Select --"] + client_list)
+        
+        m_unit = st.text_input("Unit # (Optional)")
+        
+        if st.button("Start Work Now"):
+            if m_client == "-- Select --" or m_client == "":
+                st.error("Please select or type a client name.")
+            else:
                 st.session_state.job = {"c": m_client, "u": str(m_unit), "type": "M"}
                 st.session_state.start = datetime.now()
                 st.rerun()
-        else:
-            st.warning("No clients found in system.")
 
     else:
+        # Section C: Active Clock-In
         st.success(f"ACTIVE JOB: {st.session_state.job['c']}")
         st.write(f"Started at: {st.session_state.start.strftime('%I:%M %p')}")
         notes = st.text_area("Work Notes")
