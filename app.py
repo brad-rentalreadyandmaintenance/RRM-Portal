@@ -26,7 +26,6 @@ def get_mst_time():
 
 # 3. GITHUB SYNC FUNCTIONS
 def pull_from_github(path):
-    """Force download from GitHub to local disk."""
     try:
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
@@ -41,7 +40,6 @@ def pull_from_github(path):
     return False
 
 def push_to_github(path):
-    """Force upload from local disk to GitHub."""
     try:
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{path}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
@@ -54,12 +52,12 @@ def push_to_github(path):
         requests.put(url, headers=headers, json=payload)
     except: pass
 
-# 4. BLOCKING STARTUP (Prevents data loss on refresh)
+# 4. BLOCKING STARTUP
 if 'booted' not in st.session_state:
     with st.spinner("🔄 Syncing with Cloud Database..."):
         for p in [U_PATH, C_PATH, L_PATH, T_PATH]:
             pull_from_github(p)
-        time.sleep(1) # Extra buffer to ensure file writing is finished
+        time.sleep(1)
     st.session_state.booted = True
 
 # 5. DATA LOADING HELPERS
@@ -97,7 +95,7 @@ if not st.session_state.auth:
             else: st.error("Invalid PIN")
     else:
         if ud.empty: 
-            st.warning("No staff found. Please wait 5 seconds and refresh. If still empty, Admin must add staff.")
+            st.warning("No staff found. Please wait 5 seconds and refresh.")
             if st.button("Retry Sync"):
                 st.session_state.clear()
                 st.rerun()
@@ -124,7 +122,7 @@ if st.sidebar.button("Log Out"):
 # 8. ADMIN DASHBOARD
 if view == "Admin Dashboard":
     st.title("🛠️ Admin Dashboard")
-    tabs = st.tabs(["Dispatch Work", "Manage Staff", "Manage Clients", "Work History"])
+    tabs = st.tabs(["Dispatch", "Staff Management", "Client Management", "Work History"])
     
     with tabs[0]:
         st.subheader("Assign Job to Tech")
@@ -140,24 +138,59 @@ if view == "Admin Dashboard":
         st.dataframe(td, use_container_width=True)
 
     with tabs[1]:
-        st.subheader("Add New Staff")
-        with st.form("staff_form"):
-            sn, sp, sr = st.text_input("Name"), st.text_input("PIN"), st.number_input("Rate", 25.0)
-            if st.form_submit_button("Save Staff"):
-                new_staff = pd.DataFrame([{"User":sn,"PIN":str(sp).zfill(4),"Rate":sr}])
-                ud = pd.concat([ud, new_staff], ignore_index=True)
-                ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.success("Saved!"); st.rerun()
-        st.dataframe(ud, use_container_width=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Add New Staff")
+            with st.form("staff_form"):
+                sn, sp, sr = st.text_input("Name"), st.text_input("PIN"), st.number_input("Rate", 25.0)
+                if st.form_submit_button("Save New Staff"):
+                    new_staff = pd.DataFrame([{"User":sn,"PIN":str(sp).zfill(4),"Rate":sr}])
+                    ud = pd.concat([ud, new_staff], ignore_index=True)
+                    ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.success("Saved!"); st.rerun()
+        
+        with col2:
+            st.subheader("Edit/Delete Staff")
+            if not ud.empty:
+                edit_user = st.selectbox("Select Staff to Edit", ud['User'].tolist())
+                user_data = ud[ud['User'] == edit_user].iloc[0]
+                with st.form("edit_staff_form"):
+                    new_n = st.text_input("Edit Name", value=user_data['User'])
+                    new_p = st.text_input("Edit PIN", value=user_data['PIN'])
+                    new_r = st.number_input("Edit Rate", value=float(user_data['Rate']))
+                    c1, c2 = st.columns(2)
+                    if c1.form_submit_button("Update Info"):
+                        ud.loc[ud['User'] == edit_user, ['User', 'PIN', 'Rate']] = [new_n, str(new_p).zfill(4), new_r]
+                        ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.success("Updated!"); st.rerun()
+                    if c2.form_submit_button("🗑️ Delete Staff"):
+                        ud = ud[ud['User'] != edit_user]
+                        ud.to_csv(U_PATH, index=False); push_to_github(U_PATH); st.warning("Deleted"); st.rerun()
 
     with tabs[2]:
-        st.subheader("Add New Client")
-        with st.form("client_form"):
-            cn, ca = st.text_input("Company Name"), st.text_input("Address")
-            if st.form_submit_button("Save Client"):
-                new_client = pd.DataFrame([{"Client":cn,"Address":ca}])
-                cd = pd.concat([cd, new_client], ignore_index=True)
-                cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.success("Saved!"); st.rerun()
-        st.dataframe(cd, use_container_width=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Add New Client")
+            with st.form("client_form"):
+                cn, ca = st.text_input("Company Name"), st.text_input("Address")
+                if st.form_submit_button("Save New Client"):
+                    new_client = pd.DataFrame([{"Client":cn,"Address":ca}])
+                    cd = pd.concat([cd, new_client], ignore_index=True)
+                    cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.success("Saved!"); st.rerun()
+        
+        with col2:
+            st.subheader("Edit/Delete Client")
+            if not cd.empty:
+                edit_client = st.selectbox("Select Client to Edit", cd['Client'].tolist())
+                client_data = cd[cd['Client'] == edit_client].iloc[0]
+                with st.form("edit_client_form"):
+                    new_cn = st.text_input("Edit Name", value=client_data['Client'])
+                    new_ca = st.text_input("Edit Address", value=client_data['Address'])
+                    c1, c2 = st.columns(2)
+                    if c1.form_submit_button("Update Client"):
+                        cd.loc[cd['Client'] == edit_client, ['Client', 'Address']] = [new_cn, new_ca]
+                        cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.success("Updated!"); st.rerun()
+                    if c2.form_submit_button("🗑️ Delete Client"):
+                        cd = cd[cd['Client'] != edit_client]
+                        cd.to_csv(C_PATH, index=False); push_to_github(C_PATH); st.warning("Deleted"); st.rerun()
 
     with tabs[3]:
         st.subheader("Master Logs (MST)")
@@ -166,7 +199,6 @@ if view == "Admin Dashboard":
 # 9. TECHNICIAN PORTAL
 else:
     st.title("📱 Technician Field Portal")
-    
     if 'job' not in st.session_state:
         st.subheader("📌 Your Active Tasks")
         tasks = td[(td['Tech'] == st.session_state.user) & (td['Status'] == 'Pending')]
@@ -194,7 +226,6 @@ else:
         st.success(f"ACTIVE JOB: {st.session_state.job['c']}")
         st.write(f"Started at: {st.session_state.start.strftime('%I:%M %p')}")
         notes = st.text_area("Work Notes")
-        
         c1, c2 = st.columns(2)
         with c1:
             if st.button("⌛ PAUSE", use_container_width=True):
